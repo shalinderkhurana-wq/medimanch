@@ -1,972 +1,191 @@
-import streamlit as st
+import os, re, json, sqlite3, hashlib, random
 from datetime import datetime, timedelta, timezone
-import urllib.parse
-import urllib.request
+from urllib.parse import quote
 import xml.etree.ElementTree as ET
-import json
-import re
-import time
+import requests
+import streamlit as st
 
-from medimanch_keywords import (
-    CONCEPTS,
-    YOUTUBE_QUERY_MAP,
-    NEWS_QUERY_MAP,
-    RESEARCH_QUERY_PACKS,
-    JOURNAL_FOCUS,
-)
+DB_PATH = os.environ.get('MEDIMANCH_DB', str(Path(__file__).with_name('radar_memory.db')))
+HEADERS={'User-Agent':'Medimanch-Intelligence-Radar/7.0'}
 
-# ============================================================
-# MEDIMANCH INTELLIGENCE RADAR V6
-#
-# Core rule:
-# INTERNET BEHAVIOUR / VISUAL SIGNAL
-#       -> OPPORTUNITY
-#       -> RESEARCH EXPLANATION
-#
-# Research alone can NEVER create a Shoot Now opportunity.
-# ============================================================
-
-st.set_page_config(
-    page_title="Medimanch Intelligence Radar V6",
-    page_icon="🔥",
-    layout="wide",
-)
-
-# ---------- Session memory ----------
-DEFAULTS = {
-    "current_scan": None,
-    "previous_scan": None,
-    "scan_number": 0,
-    "scan_history": [],
+SEEDS = [
+ 'body experiment','body test','strange health habit','people trying health','viral body challenge',
+ 'food trend digestion','gut health trend','fermented food trend','soaking food trend','meal timing trend',
+ 'sleep hack trend','sleep routine trend','bedtime experiment','morning light sleep','body temperature sleep',
+ 'breathing challenge','breathing technique trend','cold exposure trend','energy routine trend',
+ 'walking challenge','balance challenge','posture trend','mobility challenge','unusual exercise trend',
+ 'hydration trend','water challenge','electrolyte trend','mineral water trend',
+ 'traditional remedy trend','home remedy viral','ayurveda remedy trend','herbal drink trend','desi remedy trend',
+ 'habit challenge','dopamine detox trend','stress body experiment','focus routine trend','mind body trend'
+]
+MEDIMANCH_MAP={
+ 'backward walking':['backward walking','reverse walking','walking backwards','retro walking'],
+ 'balance':['balance challenge','one leg balance','balance test','vestibular','proprioception'],
+ 'breathing':['breathing','breathwork','breathing exercise','slow breathing','nasal breathing'],
+ 'cold exposure':['cold shower','ice bath','cold exposure','cold water'],
+ 'morning light':['morning sunlight','morning light','sunlight after waking','light exposure'],
+ 'sleep temperature':['body temperature sleep','cooling sleep','cold feet sleep','thermoregulation sleep'],
+ 'meal timing':['meal timing','early dinner','time restricted eating','eating window'],
+ 'fermentation':['fermented food','fermentation','kanji','kimchi','idli fermentation'],
+ 'soaking sprouting':['soaked food','sprouting','soaked nuts','sprouted grains'],
+ 'hydration':['hydration','water intake','electrolyte','mineral water'],
+ 'posture':['posture','neck posture','forward head','sitting posture'],
+ 'herbal remedies':['home remedy','herbal remedy','ayurvedic remedy','herbal drink','desi remedy'],
+ 'naturopathy':['naturopathy','mud pack','wet pack','hydrotherapy','natural therapy'],
+ 'interoception':['interoception','body signals','internal body sensation','gut feeling physiology'],
+ 'thermoregulation':['thermoregulation','body temperature','heat regulation','cooling body']
 }
-for k, v in DEFAULTS.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
+VISUAL_WORDS=['people doing','challenge','before after','experiment','test at home','demonstration','routine','trying','reaction','walk','hold','breathe','eat','drink','sleep','soak','sprout','ice','sunlight','posture']
+NOISE=['celebrity','movie','song','gaming','politics','election','crypto','stock','giveaway','shorts compilation']
 
+def db():
+    con=sqlite3.connect(DB_PATH); con.row_factory=sqlite3.Row
+    con.execute("""CREATE TABLE IF NOT EXISTS signals(
+      uid TEXT PRIMARY KEY, source TEXT, title TEXT, url TEXT, published TEXT, first_seen TEXT,
+      last_seen TEXT, seen_count INTEGER DEFAULT 1, last_score REAL DEFAULT 0,
+      kind TEXT, concept TEXT, raw_json TEXT)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS scans(
+      id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, source_counts TEXT, new_count INTEGER, changed_count INTEGER)""")
+    con.commit(); return con
 
-# ---------- Utilities ----------
-def now_utc():
-    return datetime.now(timezone.utc)
-
-
-def clean(value):
-    return re.sub(r"\s+", " ", str(value or "")).strip()
-
-
-def norm(value):
-    return re.sub(r"[^a-z0-9\u0900-\u097f]+", " ", clean(value).lower())
-
-
-def parse_date(value):
-    if not value:
-        return None
-    value = clean(value)
-    for candidate in (value, value.replace("Z", "+00:00")):
-        try:
-            dt = datetime.fromisoformat(candidate)
-            return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-        except Exception:
-            pass
-    for fmt in ("%a, %d %b %Y %H:%M:%S %z", "%a, %d %b %Y %H:%M %z"):
-        try:
-            return datetime.strptime(value, fmt).astimezone(timezone.utc)
-        except Exception:
-            pass
-    return None
-
-
-def fetch_bytes(url, timeout=18):
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "Medimanch-Intelligence-Radar/6.0",
-            "Accept": "application/json, application/xml, application/rss+xml, text/xml, */*",
-            "Cache-Control": "no-cache",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return response.read()
-
-
-def fetch_json(url):
-    return json.loads(fetch_bytes(url).decode("utf-8"))
-
-
-def unique_by_id(items):
-    output = {}
-    for item in items:
-        if item.get("id") not in output:
-            output[item["id"]] = item
-    return list(output.values())
-
-
-def age_hours(dt):
-    if not dt:
-        return 9999
-    return max(0.1, (now_utc() - dt).total_seconds() / 3600)
-
-
-def freshness_score(dt):
-    h = age_hours(dt)
-    if h <= 6:
-        return 10
-    if h <= 24:
-        return 9
-    if h <= 48:
-        return 8
-    if h <= 72:
-        return 7
-    if h <= 168:
-        return 5
-    return 2
-
-
-# ---------- Visual / behaviour intelligence ----------
-def visual_score(item):
-    text = norm(item.get("title", "") + " " + item.get("description", ""))
-    concept = CONCEPTS.get(item.get("concept", ""), {})
-    visual = 0
-    reasons = []
-
-    # These are actual observable actions/objects, not generic paper vocabulary.
-    action_terms = concept.get("visual_actions", [])
-    object_terms = concept.get("visual_objects", [])
-    test_terms = concept.get("visual_tests", [])
-
-    if any(norm(x) in text for x in action_terms):
-        visual += 4
-        reasons.append("physical action")
-    if any(norm(x) in text for x in object_terms):
-        visual += 2
-        reasons.append("visible object/preparation")
-    if any(norm(x) in text for x in test_terms):
-        visual += 3
-        reasons.append("test/comparison")
-    if item.get("source") == "YouTube":
-        visual += 1
-        reasons.append("video signal")
-    return min(10, visual), reasons
-
-
-def behaviour_score(item):
-    text = norm(item.get("title", "") + " " + item.get("description", ""))
-    concept = CONCEPTS.get(item.get("concept", ""), {})
-    terms = concept.get("behaviour_terms", [])
-    hits = [x for x in terms if norm(x) in text]
-    score = min(10, len(set(hits)) * 2)
-    if item.get("source") in ("YouTube", "Google Trends"):
-        score = min(10, score + 2)
-    return score, hits[:8]
-
-
-def audience_signal_score(signals):
-    sources = {x["source"] for x in signals}
-    score = 0
-    if "YouTube" in sources:
-        score += 4
-    if "Google Trends" in sources:
-        score += 4
-    if "Google News" in sources:
-        score += 2
-    # Multiple independent families matter more than duplicate records.
-    if len(sources) >= 2:
-        score += 2
-    if len(sources) >= 3:
-        score += 2
-    return min(10, score)
-
-
-def research_quality(item):
-    title = norm(item.get("title", ""))
-    abstract = norm(item.get("description", ""))
-    text = title + " " + abstract
-
-    animal = any(x in text for x in [
-        "mouse", "mice", "rat", "rats", "murine", "animal model",
-        "zebrafish", "in vitro", "cell culture"
-    ])
-    disease_heavy = any(x in text for x in [
-        "carcinoma", "tumor", "tumour", "metastasis", "chemotherapy",
-        "colitis associated colorectal cancer", "cancer treatment"
-    ])
-    human = any(x in text for x in [
-        "human", "humans", "adult", "adults", "participant",
-        "participants", "randomized", "randomised", "trial", "clinical"
-    ])
-    relevant = any(x in text for x in [
-        "sleep", "walking", "exercise", "diet", "food", "meal",
-        "fasting", "breathing", "hydration", "water", "light",
-        "temperature", "stress", "relaxation", "posture", "balance",
-        "mobility", "proprioception", "fermented", "herbal", "sunlight"
-    ])
-
-    score = 4
-    if human:
-        score += 3
-    if relevant:
-        score += 2
-    if animal:
-        score -= 4
-    if disease_heavy:
-        score -= 4
-
-    score = max(0, min(10, score))
-
-    if animal or disease_heavy:
-        role = "RESEARCH BANK"
-    elif score >= 7:
-        role = "EXPLANATION CANDIDATE"
-    else:
-        role = "BACKGROUND"
-
-    return score, role, {
-        "human": human,
-        "animal": animal,
-        "disease_heavy": disease_heavy,
-    }
-
-
-# ---------- Feed: YouTube ----------
-def youtube_scan(api_key):
-    if not api_key:
-        return [], "YouTube API is not connected."
-
-    records = []
-    errors = []
-
-    # Each query is mapped to a specific human behaviour concept.
-    # This prevents generic keyword matching from inventing a concept.
-    published_after = (now_utc() - timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    for query, concept in YOUTUBE_QUERY_MAP:
-        params = {
-            "part": "snippet",
-            "q": query,
-            "type": "video",
-            "order": "viewCount",
-            "publishedAfter": published_after,
-            "regionCode": "IN",
-            "relevanceLanguage": "hi",
-            "maxResults": "8",
-            "key": api_key,
-        }
-        url = "https://www.googleapis.com/youtube/v3/search?" + urllib.parse.urlencode(params)
-
-        try:
-            data = fetch_json(url)
-            for result in data.get("items", []):
-                video_id = result.get("id", {}).get("videoId")
-                snippet = result.get("snippet", {})
-                if not video_id:
-                    continue
-
-                records.append({
-                    "id": "yt:" + video_id,
-                    "source": "YouTube",
-                    "kind": "VISUAL_BEHAVIOUR",
-                    "concept": concept,
-                    "title": clean(snippet.get("title")),
-                    "description": clean(snippet.get("description"))[:900],
-                    "channel": clean(snippet.get("channelTitle")),
-                    "published_dt": parse_date(snippet.get("publishedAt")) or now_utc(),
-                    "url": "https://www.youtube.com/watch?v=" + video_id,
-                    "thumbnail": snippet.get("thumbnails", {}).get("medium", {}).get("url", ""),
-                })
-        except Exception as exc:
-            errors.append(f"{query}: {exc}")
-
-    records = unique_by_id(records)
-
-    # One videos.list call can retrieve stats for up to 50 video IDs.
-    for start in range(0, len(records), 50):
-        batch = records[start:start + 50]
-        ids = ",".join(x["id"].split(":", 1)[1] for x in batch)
-        params = {
-            "part": "statistics",
-            "id": ids,
-            "key": api_key,
-        }
-        url = "https://www.googleapis.com/youtube/v3/videos?" + urllib.parse.urlencode(params)
-
-        try:
-            data = fetch_json(url)
-            stats = {x["id"]: x.get("statistics", {}) for x in data.get("items", [])}
-            for item in batch:
-                stats_row = stats.get(item["id"].split(":", 1)[1], {})
-                item["views"] = int(stats_row.get("viewCount", 0) or 0)
-                item["likes"] = int(stats_row.get("likeCount", 0) or 0)
-                item["comments"] = int(stats_row.get("commentCount", 0) or 0)
-
-                hours = age_hours(item["published_dt"])
-                item["views_per_day"] = int(item["views"] / max(hours / 24, 0.25))
-        except Exception as exc:
-            errors.append("YouTube statistics: " + str(exc))
-
-    return records, ("YouTube: " + errors[0] if errors else None)
-
-
-# ---------- Feed: Google Trends ----------
-def trends_scan():
-    url = (
-        "https://trends.google.com/trending/rss"
-        "?geo=IN&_fresh=" + str(int(time.time()))
-    )
-
+def now(): return datetime.now(timezone.utc)
+def iso(dt): return dt.astimezone(timezone.utc).isoformat()
+def uid(source,url,title): return hashlib.sha1((source+'|'+url+'|'+title.lower().strip()).encode()).hexdigest()[:24]
+def clean(s): return re.sub(r'\s+',' ', re.sub(r'<[^>]+>',' ',s or '')).strip()
+def parse_date(s):
+    if not s: return None
     try:
-        root = ET.fromstring(fetch_bytes(url))
-        records = []
+        from email.utils import parsedate_to_datetime
+        return parsedate_to_datetime(s).astimezone(timezone.utc)
+    except Exception: return None
 
-        for node in root.findall(".//item"):
-            title = clean(node.findtext("title"))
-
-            # Exact concept routing: only a known concept can enter the opportunity engine.
-            matched = []
-            title_norm = norm(title)
-            for concept, data in CONCEPTS.items():
-                if any(norm(alias) in title_norm for alias in data["aliases"]):
-                    matched.append(concept)
-
-            for concept in matched[:1]:
-                records.append({
-                    "id": "trend:" + norm(title),
-                    "source": "Google Trends",
-                    "kind": "SEARCH_SIGNAL",
-                    "concept": concept,
-                    "title": title,
-                    "description": "Rising search signal in India.",
-                    "published_dt": parse_date(node.findtext("pubDate")) or now_utc(),
-                    "url": clean(node.findtext("link")),
-                })
-
-        return unique_by_id(records), None
-
-    except Exception as exc:
-        return [], "Google Trends: " + str(exc)
-
-
-# ---------- Feed: Google News ----------
-def news_scan():
-    records = []
-    errors = []
-
-    for query, concept in NEWS_QUERY_MAP:
-        params = {
-            "q": query,
-            "hl": "en-IN",
-            "gl": "IN",
-            "ceid": "IN:en",
-            "_fresh": str(int(time.time())),
-        }
-        url = "https://news.google.com/rss/search?" + urllib.parse.urlencode(params)
-
-        try:
-            root = ET.fromstring(fetch_bytes(url))
-            for node in root.findall(".//item"):
-                title = clean(node.findtext("title"))
-                desc = clean(re.sub("<[^>]+>", " ", node.findtext("description") or ""))
-
-                records.append({
-                    "id": "news:" + norm(title),
-                    "source": "Google News",
-                    "kind": "WEB_SIGNAL",
-                    "concept": concept,
-                    "title": title,
-                    "description": desc[:900],
-                    "published_dt": parse_date(node.findtext("pubDate")) or now_utc(),
-                    "url": clean(node.findtext("link")),
-                })
-        except Exception as exc:
-            errors.append(f"{query}: {exc}")
-
-    return unique_by_id(records), ("Google News: " + errors[0] if errors else None)
-
-
-# ---------- Feed: PubMed ----------
-def pubmed_scan():
-    records = []
-    errors = []
-
-    since = (now_utc() - timedelta(days=45)).strftime("%Y/%m/%d")
-    until = now_utc().strftime("%Y/%m/%d")
-
-    for concept, query in RESEARCH_QUERY_PACKS.items():
-        params = {
-            "db": "pubmed",
-            "term": f"({query}) AND ({since}[Date - Publication] : {until}[Date - Publication])",
-            "retmode": "json",
-            "retmax": "5",
-            "sort": "pub date",
-        }
-        search_url = (
-            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?"
-            + urllib.parse.urlencode(params)
-        )
-
-        try:
-            data = fetch_json(search_url)
-            ids = data.get("esearchresult", {}).get("idlist", [])
-            if not ids:
-                continue
-
-            fetch_url = (
-                "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?"
-                + urllib.parse.urlencode({
-                    "db": "pubmed",
-                    "id": ",".join(ids),
-                    "retmode": "xml",
-                })
-            )
-
-            root = ET.fromstring(fetch_bytes(fetch_url))
-
-            for article in root.findall(".//PubmedArticle"):
-                title_node = article.find(".//ArticleTitle")
-                title = clean("".join(title_node.itertext())) if title_node is not None else ""
-                pmid = clean(article.findtext(".//PMID"))
-                journal = clean(article.findtext(".//Journal/Title"))
-                abstract = " ".join(
-                    clean("".join(node.itertext()))
-                    for node in article.findall(".//AbstractText")
-                )
-
-                records.append({
-                    "id": "pmid:" + pmid,
-                    "source": "PubMed",
-                    "kind": "RESEARCH",
-                    "concept": concept,
-                    "title": title,
-                    "description": abstract[:1400],
-                    "journal": journal,
-                    "published_dt": now_utc(),
-                    "url": "https://pubmed.ncbi.nlm.nih.gov/" + pmid + "/",
-                })
-
-        except Exception as exc:
-            errors.append(f"{concept}: {exc}")
-
-    return unique_by_id(records), ("PubMed: " + errors[0] if errors else None)
-
-
-# ---------- Feed: authoritative journals ----------
-def journal_scan():
-    records = []
-    errors = []
-
-    journal_query = " OR ".join(
-        f'"{journal}"[Journal]' for journal in JOURNAL_FOCUS
-    )
-
-    params = {
-        "db": "pubmed",
-        "term": f"({journal_query}) AND 2026[dp]",
-        "retmode": "json",
-        "retmax": "40",
-        "sort": "pub date",
-    }
-
-    search_url = (
-        "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?"
-        + urllib.parse.urlencode(params)
-    )
-
+def rss(url):
     try:
-        data = fetch_json(search_url)
-        ids = data.get("esearchresult", {}).get("idlist", [])
+        r=requests.get(url,headers=HEADERS,timeout=15); r.raise_for_status(); root=ET.fromstring(r.content); out=[]
+        for item in root.findall('.//item'):
+            title=clean(item.findtext('title')); link=clean(item.findtext('link')); desc=clean(item.findtext('description')); pub=clean(item.findtext('pubDate'))
+            if title and link: out.append({'title':title,'url':link,'description':desc,'published':pub})
+        return out
+    except Exception: return []
 
-        if ids:
-            fetch_url = (
-                "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?"
-                + urllib.parse.urlencode({
-                    "db": "pubmed",
-                    "id": ",".join(ids),
-                    "retmode": "xml",
-                })
-            )
-            root = ET.fromstring(fetch_bytes(fetch_url))
+def google_trends(): return rss('https://trends.google.com/trending/rss?geo=IN&hl=en-IN')
+def google_news(q): return rss('https://news.google.com/rss/search?q='+quote(q)+'&hl=en-IN&gl=IN&ceid=IN:en')
 
-            for article in root.findall(".//PubmedArticle"):
-                title_node = article.find(".//ArticleTitle")
-                title = clean("".join(title_node.itertext())) if title_node is not None else ""
-                pmid = clean(article.findtext(".//PMID"))
-                journal = clean(article.findtext(".//Journal/Title"))
-                abstract = " ".join(
-                    clean("".join(node.itertext()))
-                    for node in article.findall(".//AbstractText")
-                )
+def youtube(q,api_key,hours=48):
+    if not api_key: return []
+    after=(now()-timedelta(hours=hours)).isoformat().replace('+00:00','Z')
+    params={'part':'snippet','q':q,'type':'video','maxResults':10,'order':'date','publishedAfter':after,'regionCode':'IN','relevanceLanguage':'hi','key':api_key}
+    try:
+        r=requests.get('https://www.googleapis.com/youtube/v3/search',params=params,timeout=15); r.raise_for_status(); data=r.json()
+        return [{'title':x.get('snippet',{}).get('title',''),'url':'https://www.youtube.com/watch?v='+x.get('id',{}).get('videoId',''),'description':x.get('snippet',{}).get('description',''),'published':x.get('snippet',{}).get('publishedAt','')} for x in data.get('items',[]) if x.get('id',{}).get('videoId')]
+    except Exception: return []
 
-                # Journal records are research-bank records.
-                # They are NOT directly promoted to video opportunities.
-                records.append({
-                    "id": "journal:" + pmid,
-                    "source": "Journal Focus",
-                    "kind": "RESEARCH",
-                    "concept": None,
-                    "title": title,
-                    "description": abstract[:1400],
-                    "journal": journal,
-                    "published_dt": now_utc(),
-                    "url": "https://pubmed.ncbi.nlm.nih.gov/" + pmid + "/",
-                })
+def concept_match(text):
+    t=text.lower(); best=[]
+    for c,aliases in MEDIMANCH_MAP.items():
+        hits=sum(1 for a in aliases if a in t)
+        if hits: best.append((hits,c))
+    return sorted(best,reverse=True)[0][1] if best else None
 
-    except Exception as exc:
-        errors.append(str(exc))
+def score_signal(x):
+    text=(x['title']+' '+x.get('description','')).lower(); score=0
+    d=parse_date(x.get('published'))
+    if d:
+        age=(now()-d).total_seconds()/3600; score += 35 if age<=6 else 25 if age<=24 else 15 if age<=48 else 5
+    score += min(25,sum(2 for w in VISUAL_WORDS if w in text))
+    score -= min(25,sum(5 for w in NOISE if w in text))
+    if x.get('concept'): score += 25
+    if any(k in text for k in ['health','body','sleep','gut','food','water','breath','exercise','remedy','wellness']): score += 10
+    return max(0,min(100,score))
 
-    return records, ("Journal Focus: " + errors[0] if errors else None)
+def classify(raw,source):
+    x={'source':source,'title':raw.get('title',''),'url':raw.get('url',''),'description':raw.get('description',''),'published':raw.get('published','')}
+    x['concept']=concept_match(x['title']+' '+x['description']); text=(x['title']+' '+x['description']).lower()
+    x['kind']='visual_behaviour' if any(w in text for w in VISUAL_WORDS) else 'discovery'; x['score']=score_signal(x); x['uid']=uid(source,x['url'],x['title']); return x
 
+def mutate(seed,n):
+    variants=[seed,seed+' new trend',seed+' challenge',seed+' experiment',seed+' people doing',seed+' before after',seed+' body',seed+' India']
+    return variants[n%len(variants)]
 
-# ---------- Opportunity engine ----------
-def build_opportunities(internet_records, research_records):
-    # Group only internet/behaviour signals.
-    clusters = {}
-    for item in internet_records:
-        concept = item.get("concept")
-        if concept:
-            clusters.setdefault(concept, []).append(item)
+def mutate_from_trend(title):
+    base=re.sub(r'\s+',' ',re.sub(r'[^\w\s-]',' ',title.lower())).strip(); base=' '.join(base.split()[:9])
+    return [base,base+' health',base+' body',base+' experiment',base+' challenge']
 
-    # Research is attached to the same concept.
-    research_by_concept = {}
-    for item in research_records:
-        concept = item.get("concept")
-        if concept:
-            research_by_concept.setdefault(concept, []).append(item)
-
-    opportunities = []
-
-    for concept, signals in clusters.items():
-        concept_data = CONCEPTS[concept]
-
-        visual_values = []
-        behaviour_values = []
-        freshness_values = []
-
-        for signal in signals:
-            v, _ = visual_score(signal)
-            b, _ = behaviour_score(signal)
-            visual_values.append(v)
-            behaviour_values.append(b)
-            freshness_values.append(freshness_score(signal.get("published_dt")))
-
-        visual = max(visual_values or [0])
-        behaviour = max(behaviour_values or [0])
-        fresh = max(freshness_values or [0])
-        audience = audience_signal_score(signals)
-
-        source_families = sorted({x["source"] for x in signals})
-
-        # Research connection is a bonus only.
-        usable_research = []
-        for r in research_by_concept.get(concept, []):
-            q, role, flags = research_quality(r)
-            r["research_quality"] = q
-            r["research_role"] = role
-            r["research_flags"] = flags
-            if role == "EXPLANATION CANDIDATE":
-                usable_research.append(r)
-
-        usable_research.sort(key=lambda x: x.get("research_quality", 0), reverse=True)
-        research_pick = usable_research[0] if usable_research else None
-
-        # Strict opportunity score:
-        # audience + behaviour + visual are the core.
-        # research can improve confidence but cannot rescue a weak behaviour.
-        score = (
-            audience * 3
-            + behaviour * 3
-            + visual * 3
-            + fresh * 1
-            + (2 if research_pick else 0)
-        )
-        score = min(100, int(round(score)))
-
-        # Hard gates.
-        if behaviour < 4:
-            continue
-        if visual < 4:
-            continue
-        if audience < 4:
-            continue
-
-        if research_pick:
-            research_label = "Research connection found"
+def persist(items):
+    con=db(); new=[]; changed=[]; ts=iso(now())
+    for x in items:
+        row=con.execute('SELECT * FROM signals WHERE uid=?',(x['uid'],)).fetchone()
+        if not row:
+            con.execute('INSERT INTO signals VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',(x['uid'],x['source'],x['title'],x['url'],x.get('published'),ts,ts,1,x['score'],x['kind'],x.get('concept'),json.dumps(x)))
+            x['status']='NEW'; new.append(x)
         else:
-            research_label = "Research connection not yet found"
+            delta=x['score']-row['last_score']; status='ACCELERATING' if delta>=15 else 'RISING' if delta>=5 else 'STABLE'
+            con.execute('UPDATE signals SET last_seen=?,seen_count=seen_count+1,last_score=?,concept=?,raw_json=? WHERE uid=?',(ts,x['score'],x.get('concept'),json.dumps(x),x['uid']))
+            x['status']=status
+            if status!='STABLE': changed.append(x)
+    con.execute('INSERT INTO scans(ts,source_counts,new_count,changed_count) VALUES(?,?,?,?)',(ts,json.dumps({}),len(new),len(changed))); con.commit(); con.close(); return new,changed
 
-        opportunities.append({
-            "concept": concept,
-            "title": concept_data["display"],
-            "human_question": concept_data["human_question"],
-            "show": concept_data["show"],
-            "video_direction": concept_data["video_direction"],
-            "score": score,
-            "audience": audience,
-            "behaviour": behaviour,
-            "visual": visual,
-            "freshness": fresh,
-            "sources": source_families,
-            "signals": sorted(
-                signals,
-                key=lambda x: (
-                    x.get("views_per_day", 0),
-                    freshness_score(x.get("published_dt"))
-                ),
-                reverse=True,
-            )[:8],
-            "research": research_pick,
-            "research_label": research_label,
-        })
-
-    opportunities.sort(
-        key=lambda x: (
-            x["score"],
-            x["audience"],
-            x["visual"],
-            x["behaviour"],
-        ),
-        reverse=True,
-    )
-
-    return opportunities
-
-
-def compare_scans(current, previous):
-    previous_map = {
-        item["concept"]: item
-        for item in (previous or {}).get("opportunities", [])
-    }
-
-    for item in current:
-        old = previous_map.get(item["concept"])
-        if old is None:
-            item["status"] = "🆕 NEW"
-        elif item["score"] >= old["score"] + 8:
-            item["status"] = "🔥 ACCELERATING"
-        elif item["score"] > old["score"]:
-            item["status"] = "📈 RISING"
-        else:
-            item["status"] = "🔁 STABLE"
-
-    return current
-
-
-# ---------- Presentation ----------
-def metric_bar(label, value, maximum=10):
-    filled = int(round(value / maximum * 5))
-    return "●" * filled + "○" * (5 - filled)
-
-
-def render_opportunity(item, rank):
-    with st.container(border=True):
-        top_left, top_right = st.columns([5, 1])
-
-        with top_left:
-            st.markdown(
-                f"## {rank}. {item.get('status', '')} {item['title']}"
-            )
-            st.caption(
-                f"Opportunity {item['score']}/100  •  "
-                f"Audience {item['audience']}/10  •  "
-                f"Behaviour {item['behaviour']}/10  •  "
-                f"Visual {item['visual']}/10  •  "
-                f"Freshness {item['freshness']}/10"
-            )
-
-        with top_right:
-            yt = next(
-                (x for x in item["signals"] if x["source"] == "YouTube"),
-                None
-            )
-            if yt and yt.get("thumbnail"):
-                st.image(yt["thumbnail"], use_container_width=True)
-
-        st.markdown("### 👀 WHAT PEOPLE ARE DOING / WATCHING")
-        st.write(item["human_question"])
-
-        st.markdown("### 🎬 WHAT MEDIMANCH CAN ACTUALLY SHOW")
-        st.write(item["show"])
-
-        st.markdown("### 💡 POSSIBLE VIDEO DIRECTION")
-        st.info(item["video_direction"])
-
-        st.markdown("### 📡 WHY THIS IS ON THE RADAR")
-        st.write(
-            "Independent signal families: "
-            + " • ".join(item["sources"])
-        )
-
-        if item["research"]:
-            r = item["research"]
-            st.markdown("### 🔬 RESEARCH CONNECTION")
-            st.write(r["title"])
-            st.caption(
-                f"{r.get('journal','')}  •  "
-                f"{r.get('research_role','')}  •  "
-                f"research routing {r.get('research_quality', 0)}/10"
-            )
-            st.write(
-                "Use this research to explain/check the behaviour — "
-                "not as automatic proof that the viral behaviour works."
-            )
-        else:
-            st.markdown("### 🔬 RESEARCH CONNECTION")
-            st.write(
-                "No strong matching research connection was found in this scan. "
-                "This remains a behaviour/visual lead."
-            )
-
-        with st.expander("VIEW SOURCE SIGNALS"):
-            for signal in item["signals"]:
-                if signal["source"] == "YouTube":
-                    stats = (
-                        f" • {signal.get('views', 0):,} views"
-                        f" • {signal.get('views_per_day', 0):,}/day"
-                    )
-                else:
-                    stats = ""
-                st.write(f"**{signal['source']}**{stats}: {signal['title']}")
-                st.markdown(f"[Open source]({signal['url']})")
-
-
-def render_research(item):
-    q, role, flags = research_quality(item)
-
-    with st.container(border=True):
-        st.markdown(f"### 🔬 {item['title']}")
-        st.caption(
-            f"{item.get('journal','')} • {role} • research routing {q}/10"
-        )
-
-        if flags["animal"]:
-            st.warning(
-                "Animal/preclinical context. Kept in Research Bank; "
-                "not promoted as a human home/public video opportunity."
-            )
-        elif flags["disease_heavy"]:
-            st.warning(
-                "Disease-treatment-heavy context. Kept in Research Bank "
-                "instead of being converted into a generic home experiment."
-            )
-        else:
-            st.info(
-                "Research record. It can explain or challenge a behaviour "
-                "but does not create a Shoot Now opportunity by itself."
-            )
-
-        if item.get("description"):
-            st.write(item["description"][:900])
-
-        st.markdown(f"[Open source]({item['url']})")
-
-
-# ============================================================
-# UI
-# ============================================================
-
-st.title("🔥 MEDIMANCH INTELLIGENCE RADAR V6")
-st.write(
-    "Behaviour first • Visual opportunity • Fresh signals • Research explanation"
-)
-
-with st.sidebar:
-    api_key = st.secrets.get("YOUTUBE_API_KEY", "")
-
+def run_scan(api_key,scan_number):
+    raw=[]; counts={}; trends=google_trends(); counts['trends']=len(trends)
+    for t in trends[:35]: raw.append(classify(t,'Google Trends IN'))
+    queries=[]
+    for t in trends[:35]:
+        tx=(t.get('title','')+' '+t.get('description','')).lower()
+        if any(k in tx for k in ['health','body','food','sleep','water','fitness','exercise','diet','remedy','wellness','weight','pain','breath','skin','gut']): queries += mutate_from_trend(t.get('title',''))[:2]
+    rng=random.Random(scan_number*7919); seeds=SEEDS[:]; rng.shuffle(seeds); queries += [mutate(q,scan_number+i) for i,q in enumerate(seeds[:10])]
+    seen=set(); queries=[q for q in queries if q and q.lower() not in seen and not seen.add(q.lower())]
+    for q in queries[:12]:
+        for item in google_news(q)[:8]: raw.append(classify(item,'Google News'))
+    counts['news_queries']=min(12,len(queries))
+    ytq=queries[:8]
     if api_key:
-        st.success("🟢 YouTube API: CONNECTED")
-    else:
-        st.error("🔴 YouTube API: NOT CONNECTED")
+        for q in ytq:
+            for item in youtube(q,api_key,48): raw.append(classify(item,'YouTube'))
+    counts['youtube_queries']=len(ytq) if api_key else 0
+    uniq={}
+    for x in raw:
+        if x['uid'] not in uniq or x['score']>uniq[x['uid']]['score']: uniq[x['uid']]=x
+    items=sorted(uniq.values(),key=lambda z:z['score'],reverse=True); new,changed=persist(items)
+    return items,new,changed,counts
 
+st.set_page_config(page_title='MEDIMANCH INTELLIGENCE RADAR V7',layout='wide')
+st.title('🔥 MEDIMANCH INTELLIGENCE RADAR V7 — DISCOVERY ENGINE')
+st.caption('INTERNET FIRST → CHANGE DETECTION → QUERY MUTATION → MEDIMANCH MATCH → VISUAL OPPORTUNITY')
+api_key=st.secrets.get('YOUTUBE_API_KEY',os.getenv('YOUTUBE_API_KEY',''))
+con=db(); scan_count=con.execute('SELECT COUNT(*) FROM scans').fetchone()[0]; con.close()
+a,b,c,d=st.columns(4); a.metric('Persistent scans',scan_count); b.metric('YouTube API','CONNECTED' if api_key else 'NOT CONNECTED'); c.metric('Memory','ON'); d.metric('Mode','INTERNET-FIRST')
+if 'last_items' not in st.session_state: st.session_state.last_items=[]
+if st.button('🔄 RUN FRESH DISCOVERY SCAN',type='primary'):
+    with st.spinner('Discovering new signals, changing search paths and comparing with persistent memory…'):
+        items,new,changed,counts=run_scan(api_key,scan_count+1)
+        st.session_state.update(last_items=items,last_new=new,last_changed=changed,counts=counts)
+    st.success(f'Fresh scan: {len(new)} NEW, {len(changed)} CHANGED/RISING')
+items=st.session_state.get('last_items',[]); new=st.session_state.get('last_new',[]); changed=st.session_state.get('last_changed',[])
+tabs=st.tabs(['🔥 NEW','⚡ ACCELERATING','🔄 RISING','🎥 VISUAL','🧭 UNKNOWN','🗃️ MEMORY','⚙️ STATUS'])
+def card(x):
+    st.markdown(f"### {x.get('status','SIGNAL')} — {x['title']}")
+    st.write(f"**Source:** {x['source']}  |  **Score:** {x['score']}/100  |  **Concept:** {x.get('concept') or 'Not mapped'}")
+    if x.get('description'): st.caption(x['description'][:350])
+    if x.get('url'): st.markdown(f"[Open source]({x['url']})")
     st.divider()
-    st.markdown("### LIVE FEED LAYERS")
-    st.write("🎥 YouTube behaviour/video")
-    st.write("📈 Google Trends India")
-    st.write("📰 Google News")
-    st.write("🔬 PubMed")
-    st.write("📚 Authoritative Journal Watch")
-
-    st.divider()
-    st.markdown("### V6 RULE")
-    st.caption(
-        "Research papers cannot become Shoot Now merely because "
-        "their abstract contains words such as test, compare, heat or metabolism."
-    )
-
-    if st.button("🧹 RESET SCAN MEMORY", use_container_width=True):
-        st.session_state.current_scan = None
-        st.session_state.previous_scan = None
-        st.session_state.scan_number = 0
-        st.session_state.scan_history = []
-        st.rerun()
-
-
-if st.button(
-    "🔄 RUN FRESH INTELLIGENCE SCAN",
-    type="primary",
-    use_container_width=True,
-):
-    # No @st.cache_data is used for live feed functions.
-    # Clear any unrelated cache and create a genuinely new scan.
-    st.cache_data.clear()
-
-    with st.spinner(
-        "1/5 Internet behaviour → 2/5 visual signals → "
-        "3/5 research → 4/5 convergence → 5/5 opportunity cards..."
-    ):
-        youtube_records, youtube_error = youtube_scan(api_key)
-        trend_records, trend_error = trends_scan()
-        news_records, news_error = news_scan()
-        pubmed_records, pubmed_error = pubmed_scan()
-        journal_records, journal_error = journal_scan()
-
-        internet_records = unique_by_id(
-            youtube_records + trend_records + news_records
-        )
-        research_records = unique_by_id(
-            pubmed_records + journal_records
-        )
-
-        opportunities = build_opportunities(
-            internet_records,
-            research_records,
-        )
-
-        opportunities = compare_scans(
-            opportunities,
-            st.session_state.current_scan,
-        )
-
-        scan = {
-            "number": st.session_state.scan_number + 1,
-            "time": now_utc(),
-            "opportunities": opportunities,
-            "research": research_records,
-            "internet_count": len(internet_records),
-            "research_count": len(research_records),
-            "errors": [
-                x for x in [
-                    youtube_error,
-                    trend_error,
-                    news_error,
-                    pubmed_error,
-                    journal_error,
-                ]
-                if x
-            ],
-        }
-
-        if st.session_state.current_scan is not None:
-            st.session_state.previous_scan = st.session_state.current_scan
-            st.session_state.scan_history.append(
-                st.session_state.current_scan
-            )
-            st.session_state.scan_history = st.session_state.scan_history[-10:]
-
-        st.session_state.scan_number = scan["number"]
-        st.session_state.current_scan = scan
-
-    st.rerun()
-
-
-scan = st.session_state.current_scan
-
-if scan is None:
-    st.info(
-        "Click **RUN FRESH INTELLIGENCE SCAN**. "
-        "The radar will first look for behaviour/visual signals, "
-        "then attach research."
-    )
-    st.stop()
-
-opportunities = scan["opportunities"]
-shoot_now = [x for x in opportunities if x["score"] >= 55]
-new_items = [x for x in opportunities if x.get("status") == "🆕 NEW"]
-accelerating = [x for x in opportunities if x.get("status") == "🔥 ACCELERATING"]
-rising = [x for x in opportunities if x.get("status") == "📈 RISING"]
-
-m = st.columns(6)
-m[0].metric("SCAN", f"#{scan['number']}")
-m[1].metric("OPPORTUNITIES", len(opportunities))
-m[2].metric("NEW", len(new_items))
-m[3].metric("ACCELERATING", len(accelerating))
-m[4].metric("RESEARCH", scan["research_count"])
-m[5].metric("SHOOT NOW", len(shoot_now))
-
-st.caption(
-    "Fresh scan: "
-    + scan["time"].astimezone().strftime("%d %b %Y, %I:%M:%S %p")
-)
-
-tabs = st.tabs([
-    "🔥 SHOOT NOW",
-    "🆕 WHAT CHANGED",
-    "🎥 VISUAL BEHAVIOUR",
-    "🔬 RESEARCH BANK",
-    "📚 JOURNALS",
-    "⚙️ STATUS",
-])
-
 with tabs[0]:
-    if not shoot_now:
-        st.warning(
-            "No concept crossed the strict Shoot Now threshold. "
-            "This is intentional: weak research matches are not being promoted."
-        )
-    for i, item in enumerate(shoot_now[:10], 1):
-        render_opportunity(item, i)
-
+    arr=sorted(new,key=lambda x:x['score'],reverse=True)[:20]
+    st.subheader('Signals never seen before'); [card(x) for x in arr]
+    if not arr: st.info('No brand-new signals. Run later; the query space rotates.')
 with tabs[1]:
-    changed = new_items + accelerating + rising
-    if not changed:
-        st.info(
-            "No new/rising/accelerating behaviour concepts versus the previous scan."
-        )
-    for i, item in enumerate(changed[:20], 1):
-        render_opportunity(item, i)
-
+    arr=sorted([x for x in changed if x['status']=='ACCELERATING'],key=lambda x:x['score'],reverse=True)[:20]; [card(x) for x in arr]
+    if not arr: st.info('No accelerating signals detected.')
 with tabs[2]:
-    visual_items = sorted(
-        opportunities,
-        key=lambda x: (x["visual"], x["audience"], x["score"]),
-        reverse=True,
-    )
-    for i, item in enumerate(visual_items[:20], 1):
-        render_opportunity(item, i)
-
+    arr=sorted([x for x in changed if x['status']=='RISING'],key=lambda x:x['score'],reverse=True)[:20]; [card(x) for x in arr]
+    if not arr: st.info('No rising signals detected.')
 with tabs[3]:
-    if not scan["research"]:
-        st.info("No research records returned.")
-    for item in sorted(
-        scan["research"],
-        key=lambda x: research_quality(x)[0],
-        reverse=True,
-    )[:40]:
-        render_research(item)
-
+    arr=[x for x in items if x['kind']=='visual_behaviour' and x['score']>=35][:25]; [card(x) for x in arr]
 with tabs[4]:
-    st.write(
-        "Authoritative journals are a research discovery layer. "
-        "They do not automatically create video opportunities."
-    )
-    st.write(", ".join(JOURNAL_FOCUS))
-
+    arr=[x for x in new if not x.get('concept')][:25]; [card(x) for x in arr]
+    st.caption('UNKNOWN is deliberate: it stops the dictionary from becoming a prison.')
 with tabs[5]:
-    st.write("**Internet signal records:**", scan["internet_count"])
-    st.write("**Research records:**", scan["research_count"])
-    st.write("**Opportunity concepts:**", len(opportunities))
-    st.write("**Previous scans retained in this session:**", len(st.session_state.scan_history))
-
-    if scan["errors"]:
-        st.warning("Some feed layers reported an issue:")
-        for error in scan["errors"]:
-            st.write("•", error)
-    else:
-        st.success("All configured feed layers returned without reported errors.")
-
-    st.divider()
-    st.markdown("### V6 intelligence pipeline")
-    st.write("1. Discover real internet behaviour / visual signals.")
-    st.write("2. Route signals into known Medimanch concept universes.")
-    st.write("3. Score actual audience + behaviour + visual evidence.")
-    st.write("4. Search research for the same concept.")
-    st.write("5. Keep animal/preclinical/disease-heavy papers in Research Bank.")
-    st.write("6. Attach useful research as an explanation layer.")
-    st.write("7. Promote only human-facing opportunities to Shoot Now.")
-    st.write("8. Compare the new scan with the previous scan.")
+    con=db(); rows=con.execute('SELECT source,title,last_seen,seen_count,last_score,concept FROM signals ORDER BY last_seen DESC LIMIT 100').fetchall(); con.close(); st.dataframe([dict(r) for r in rows],use_container_width=True)
+with tabs[6]:
+    st.write('Google Trends = high-frequency discovery. Google News = expansion. YouTube = quota-aware recent video discovery. SQLite = persistent memory.')
+    st.write('Last source counts:',st.session_state.get('counts',{})); st.warning('Never paste your YouTube API key into chat. Store it only in Streamlit Secrets as YOUTUBE_API_KEY.')
+st.caption('V7 rule: DISCOVER FIRST. Do not repeatedly search the same fixed Medimanch topics and call them fresh.')
