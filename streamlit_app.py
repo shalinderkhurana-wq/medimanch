@@ -408,7 +408,17 @@ def filtered(arr):
     return sorted(out,key=lambda z:(z.get("selection_score",0),z.get("freshness_score",0),z.get("question_score",0)),reverse=True)
 
 cols=st.columns(6)
-cols[0].metric("Signals",len(items)); cols[1].metric("Energy",sum(x["pillar"]=="Energy" for x in items)); cols[2].metric("Gut",sum(x["pillar"]=="Gut" for x in items)); cols[3].metric("Hydration",sum(x["pillar"]=="Hydration" for x in items)); cols[4].metric("Recovery",sum(x["pillar"]=="Recovery" for x in items)); cols[5].metric("YouTube","ON" if key else "OFF")
+metric_values=[
+    ("Signals", len(items)),
+    ("Energy", sum(x.get("pillar")=="Energy" for x in items)),
+    ("Gut", sum(x.get("pillar")=="Gut" for x in items)),
+    ("Hydration", sum(x.get("pillar")=="Hydration" for x in items)),
+    ("Recovery", sum(x.get("pillar")=="Recovery" for x in items)),
+    ("YouTube", "ON" if bool(key) else "OFF"),
+]
+for col, (label, value) in zip(cols, metric_values):
+    with col:
+        st.metric(label=label, value=value)
 
 tabs=st.tabs(["⚡ SELECT NOW","❓ PEOPLE QUESTIONS","🎥 SHOOTABLE","🔥 FRESH","📈 RISING","🧬 BY PILLAR","▶️ YOUTUBE","📰 NEWS","🔬 RESEARCH","🗃️ MEMORY","⚙️ STATUS"])
 
