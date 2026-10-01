@@ -7,7 +7,9 @@ import requests
 import streamlit as st
 
 DB_PATH = os.environ.get('MEDIMANCH_DB', str(Path(__file__).with_name('radar_memory.db')))
-HEADERS={'User-Agent':'Medimanch-Intelligence-Radar/7.0'}
+HEADERS={'User-Agent':'Medimanch-Intelligence-Radar/7.1'}
+SOURCE_STATUS={}
+SOURCE_ERRORS={}
 
 SEEDS = [
  'body experiment','body test','strange health habit','people trying health','viral body challenge',
@@ -60,17 +62,20 @@ def parse_date(s):
         return parsedate_to_datetime(s).astimezone(timezone.utc)
     except Exception: return None
 
-def rss(url):
+def rss(url, source_name='Feed'):
     try:
         r=requests.get(url,headers=HEADERS,timeout=15); r.raise_for_status(); root=ET.fromstring(r.content); out=[]
+        SOURCE_STATUS[source_name]=True; SOURCE_ERRORS.pop(source_name,None)
         for item in root.findall('.//item'):
             title=clean(item.findtext('title')); link=clean(item.findtext('link')); desc=clean(item.findtext('description')); pub=clean(item.findtext('pubDate'))
             if title and link: out.append({'title':title,'url':link,'description':desc,'published':pub})
         return out
-    except Exception: return []
+    except Exception as e:
+        SOURCE_STATUS[source_name]=False; SOURCE_ERRORS[source_name]=str(e)
+        return []
 
-def google_trends(): return rss('https://trends.google.com/trending/rss?geo=IN&hl=en-IN')
-def google_news(q): return rss('https://news.google.com/rss/search?q='+quote(q)+'&hl=en-IN&gl=IN&ceid=IN:en')
+def google_trends(): return rss('https://trends.google.com/trending/rss?geo=IN&hl=en-IN','Google Trends')
+def google_news(q): return rss('https://news.google.com/rss/search?q='+quote(q)+'&hl=en-IN&gl=IN&ceid=IN:en','Google News')
 
 def youtube(q,api_key,hours=48):
     if not api_key: return []
@@ -79,7 +84,9 @@ def youtube(q,api_key,hours=48):
     try:
         r=requests.get('https://www.googleapis.com/youtube/v3/search',params=params,timeout=15); r.raise_for_status(); data=r.json()
         return [{'title':x.get('snippet',{}).get('title',''),'url':'https://www.youtube.com/watch?v='+x.get('id',{}).get('videoId',''),'description':x.get('snippet',{}).get('description',''),'published':x.get('snippet',{}).get('publishedAt','')} for x in data.get('items',[]) if x.get('id',{}).get('videoId')]
-    except Exception: return []
+    except Exception as e:
+        SOURCE_STATUS['YouTube']=False; SOURCE_ERRORS['YouTube']=str(e)
+        return []
 
 def concept_match(text):
     t=text.lower(); best=[]
@@ -149,9 +156,46 @@ def run_scan(api_key,scan_number):
     items=sorted(uniq.values(),key=lambda z:z['score'],reverse=True); new,changed=persist(items)
     return items,new,changed,counts
 
-st.set_page_config(page_title='MEDIMANCH INTELLIGENCE RADAR V7',layout='wide')
-st.title('🔥 MEDIMANCH INTELLIGENCE RADAR V7 — DISCOVERY ENGINE')
+st.set_page_config(page_title='MEDIMANCH INTELLIGENCE RADAR V7.1',layout='wide')
+
+# --- SIDEBAR: LIVE SOURCE CONTROL ---
+with st.sidebar:
+    st.header('🌐 LIVE FEEDS')
+    st.caption('These are the actual source routes used by the radar.')
+    st.markdown('[🔎 Google Trends India](https://trends.google.com/trending?geo=IN)')
+    st.markdown('[📰 Google News India](https://news.google.com/?hl=en-IN&gl=IN&ceid=IN:en)')
+    st.markdown('[▶️ YouTube Trending](https://www.youtube.com/feed/trending)')
+    st.markdown('[📚 PubMed](https://pubmed.ncbi.nlm.nih.gov/)')
+    st.divider()
+    st.subheader('🔍 MANUAL DISCOVERY')
+    manual_q=st.text_input('Search a signal/topic',placeholder='e.g. cold feet sleep')
+    if st.button('Search Google News',use_container_width=True) and manual_q.strip():
+        manual_results=google_news(manual_q.strip())[:20]
+        st.session_state['manual_results']=manual_results
+    if st.button('Clear manual results',use_container_width=True):
+        st.session_state['manual_results']=[]
+    st.divider()
+    st.subheader('📡 SOURCE STATUS')
+    for name in ['Google Trends','Google News','YouTube']:
+        if name not in SOURCE_STATUS:
+            st.write(f'⚪ {name}: not scanned')
+        elif SOURCE_STATUS[name]:
+            st.write(f'🟢 {name}: connected')
+        else:
+            st.write(f'🔴 {name}: error')
+            if SOURCE_ERRORS.get(name): st.caption(SOURCE_ERRORS[name][:180])
+    st.divider()
+    st.caption('V7.1: discovery-first + source transparency + manual search')
+
+st.title('🔥 MEDIMANCH INTELLIGENCE RADAR V7.1 — DISCOVERY ENGINE')
 st.caption('INTERNET FIRST → CHANGE DETECTION → QUERY MUTATION → MEDIMANCH MATCH → VISUAL OPPORTUNITY')
+
+manual_results=st.session_state.get('manual_results',[])
+if manual_results:
+    st.subheader('🔎 MANUAL SEARCH RESULTS')
+    for mr in manual_results:
+        st.markdown(f"**{mr.get('title','')}** — [Open source]({mr.get('url','')})")
+    st.divider()
 api_key=st.secrets.get('YOUTUBE_API_KEY',os.getenv('YOUTUBE_API_KEY',''))
 con=db(); scan_count=con.execute('SELECT COUNT(*) FROM scans').fetchone()[0]; con.close()
 a,b,c,d=st.columns(4); a.metric('Persistent scans',scan_count); b.metric('YouTube API','CONNECTED' if api_key else 'NOT CONNECTED'); c.metric('Memory','ON'); d.metric('Mode','INTERNET-FIRST')
@@ -187,6 +231,6 @@ with tabs[4]:
 with tabs[5]:
     con=db(); rows=con.execute('SELECT source,title,last_seen,seen_count,last_score,concept FROM signals ORDER BY last_seen DESC LIMIT 100').fetchall(); con.close(); st.dataframe([dict(r) for r in rows],use_container_width=True)
 with tabs[6]:
-    st.write('Google Trends = high-frequency discovery. Google News = expansion. YouTube = quota-aware recent video discovery. SQLite = persistent memory.')
+    st.write('Google Trends = high-frequency discovery. Google News = expansion. YouTube = quota-aware recent video discovery. PubMed = research navigation. SQLite = scan memory. Sidebar now shows the actual source links and live connection status.')
     st.write('Last source counts:',st.session_state.get('counts',{})); st.warning('Never paste your YouTube API key into chat. Store it only in Streamlit Secrets as YOUTUBE_API_KEY.')
 st.caption('V7 rule: DISCOVER FIRST. Do not repeatedly search the same fixed Medimanch topics and call them fresh.')
