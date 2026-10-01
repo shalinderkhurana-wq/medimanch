@@ -1,83 +1,174 @@
-# MEDIMANCH V2 RADAR DICTIONARY
-# Edit this file later. The engine reads these categories automatically.
+# MEDIMANCH RADAR DICTIONARY V5
+# Expand this file later without changing the main app.
 
 RADAR_DICTIONARY = {
     "behaviour": [
-        "challenge", "try this", "do this", "hack", "routine", "ritual",
-        "experiment", "test yourself", "before bed", "before sleep",
-        "after waking", "every morning", "every night", "for 7 days",
-        "30 day challenge", "on empty stomach", "before eating", "after eating",
-        "walk after meals", "sleep routine", "morning routine"
+        "try this", "people are trying", "health hack", "wellness hack",
+        "routine", "morning routine", "night routine", "before bed",
+        "empty stomach", "after eating", "walking", "backward walking",
+        "breathing", "holding breath", "nose breathing", "mouth breathing",
+        "stretching", "rubbing", "pressing", "tapping", "shaking",
+        "soaking", "boiling", "roasting", "mixing", "drinking",
+        "applying", "sleeping", "fasting", "cold shower", "ice bath",
+        "hot water", "sunlight", "grounding", "barefoot",
     ],
-
     "actions": [
-        "rub", "press", "tap", "hold", "shake", "massage", "stretch", "bend",
-        "twist", "walk", "stand", "sit", "breathe", "inhale", "exhale",
-        "soak", "boil", "roast", "mix", "drink", "apply", "rinse", "swallow",
-        "chew", "smell", "sniff", "cover", "wrap", "tie", "hang", "balance",
-        "lift", "squat", "bend forward", "touch", "shake your body",
-        "rub your feet", "press the point", "hold your breath"
+        "walk", "bend", "squat", "stretch", "balance", "stand", "sit",
+        "hold", "touch", "press", "rub", "tap", "breathe", "inhale",
+        "exhale", "swallow", "chew", "soak", "boil", "roast", "ferment",
+        "mix", "drink", "apply", "massage", "shake", "jump", "crawl",
+        "sleep", "fast", "expose", "cool", "heat",
     ],
-
     "visual": [
-        "before and after", "before after", "challenge", "test", "demonstration",
-        "watch what happens", "see what happens", "one leg", "eyes closed",
-        "touch your toes", "flexibility", "balance", "posture", "breathing",
-        "belly", "abdomen", "swelling", "bloating", "movement", "range of motion"
+        "before after", "before and after", "test", "challenge", "compare",
+        "balance", "flexibility", "range of motion", "posture",
+        "breathing", "pulse", "heart rate", "reaction time", "grip",
+        "walk", "squat", "stretch", "movement", "ice", "heat",
+        "water", "food preparation", "fermented", "soaked",
     ],
-
     "naturopathy": [
-        "naturopathy", "natural remedy", "natural treatment", "home remedy",
-        "hydrotherapy", "water therapy", "hot water", "cold water", "ice bath",
-        "cold plunge", "heat therapy", "steam", "sunlight", "sun exposure",
-        "mud pack", "mud therapy", "clay", "wet pack", "cold pack", "hot pack",
-        "abdominal wrap", "abdomen wrap", "body wrap", "foot bath", "sitz bath",
-        "fasting", "nature cure", "breathing exercise", "nasal breathing"
+        "naturopathy", "hydrotherapy", "water therapy", "cold therapy",
+        "heat therapy", "mud therapy", "sun bath", "sunlight therapy",
+        "wet pack", "cold pack", "hot pack", "abdominal pack",
+        "abdomen wrap", "clay", "mud pack", "fasting therapy",
+        "nature cure", "breathing exercise", "relaxation",
     ],
-
     "diet_food": [
-        "raw", "cooked", "boiled", "roasted", "soaked", "sprouted", "fermented",
-        "powder", "ground", "blend", "juice", "tea", "infused water",
-        "empty stomach", "before meal", "after meal", "food order",
-        "meal timing", "slow eating", "chewing", "protein", "fiber", "fibre",
-        "seed", "spice", "herb", "ginger", "garlic", "turmeric", "cinnamon",
-        "clove", "fenugreek", "lemon", "honey", "salt", "vinegar"
+        "diet", "food", "meal", "breakfast", "dinner", "lunch",
+        "empty stomach", "after meal", "before meal", "meal timing",
+        "fermented", "fermentation", "soaked", "sprouted", "roasted",
+        "boiled", "spice", "herb", "seed", "fruit", "vegetable",
+        "protein", "fiber", "fibre", "honey", "ginger", "garlic",
+        "turmeric", "cinnamon", "lemon", "salt", "vinegar",
     ],
-
     "self_test": [
-        "self test", "self-test", "test yourself", "check yourself",
-        "can you do this", "try this test", "one leg", "eyes closed",
-        "touch your toes", "wall test", "sit to stand", "stand up test",
-        "breath hold", "balance test", "mobility test", "posture test",
-        "flexibility test", "neck test"
+        "self test", "home test", "simple test", "test yourself",
+        "at home test", "check yourself", "balance test", "flexibility test",
+        "mobility test", "breathing test", "posture test", "reaction test",
+        "grip test", "sit to stand",
     ],
-
+    "challenge": [
+        "challenge", "30 day challenge", "7 day challenge", "try for",
+        "do this for", "daily challenge", "experiment", "public test",
+        "street test", "blind test", "compare",
+    ],
     "myth_claim": [
-        "does this really work", "is this true", "science says",
-        "scientifically proven", "proven to", "detox", "flush toxins",
-        "remove toxins", "boost immunity", "burn fat", "melt belly fat",
-        "cure", "reverse", "fix", "cleanse", "secret", "ancient secret",
-        "one trick", "hidden benefit", "doctors don't tell you",
-        "miracle", "instant", "guaranteed", "no medicine", "without medicine"
+        "myth", "fact", "does it work", "really works", "scientific",
+        "science behind", "proof", "claim", "viral claim", "debunk",
+        "truth", "secret", "hack", "cure", "detox",
     ],
-
     "effects": [
-        "sleep", "energy", "digestion", "bloating", "gas", "constipation",
+        "sleep", "energy", "digestion", "bloating", "constipation",
         "acidity", "pain", "flexibility", "balance", "memory", "focus",
-        "stress", "weight loss", "fat loss", "belly fat", "breathing",
-        "circulation", "recovery", "mobility", "posture", "skin", "hair",
-        "appetite", "hunger", "blood sugar", "inflammation", "heart rate",
-        "blood pressure", "gut health", "metabolism"
+        "stress", "weight loss", "appetite", "blood sugar", "metabolism",
+        "recovery", "mobility", "posture", "breathing", "circulation",
+        "skin", "hair",
     ],
-
     "ayurveda": [
-        "ayurveda", "ayurvedic", "rasayana", "churna", "churan", "kadha",
-        "kwath", "lepa", "taila", "tail", "nasya", "abhyanga", "dinacharya",
-        "ritucharya", "herbal", "traditional medicine", "ayush"
+        "ayurveda", "ayurvedic", "herb", "churna", "kadha", "rasayana",
+        "triphala", "ashwagandha", "ginger", "turmeric", "amla",
+        "jeera", "cumin", "fennel", "ajwain", "methi", "neem",
+        "giloy", "brahmi", "shatavari", "vidarikand", "honey",
     ],
-
-    "viral_language": [
-        "viral", "trending", "everyone is doing", "people are trying",
-        "going viral", "trend", "challenge", "hack", "routine", "secret"
-    ]
 }
+
+# Queries designed to discover behaviours, not just disease topics.
+YOUTUBE_SEARCH_QUERIES = [
+    "health hack try this",
+    "wellness hack try this",
+    "home remedy viral",
+    "natural remedy viral",
+    "before bed health hack",
+    "empty stomach health hack",
+    "after eating health hack",
+    "food preparation health trend",
+    "food challenge health",
+    "self test health challenge",
+    "balance test challenge",
+    "flexibility test challenge",
+    "breathing challenge health",
+    "sleep routine viral",
+    "digestion hack viral",
+    "weight loss hack viral",
+    "Ayurveda remedy viral",
+    "naturopathy remedy",
+    "health myth fact",
+    "science behind viral health hack",
+    "morning routine health",
+    "night routine health",
+    "natural sleep hack",
+    "natural digestion hack",
+]
+
+# Query packs for PubMed / Europe PMC.
+RESEARCH_QUERY_PACKS = {
+    "breathing_sleep": '"breathing" AND (sleep OR respiration OR autonomic)',
+    "food_meal_timing": '("meal timing" OR fasting OR eating time OR breakfast)',
+    "fermentation_fibre": '(fermented food OR fermentation OR fiber OR fibre OR microbiome)',
+    "cold_heat_water": '(cold exposure OR heat exposure OR hydrotherapy OR water)',
+    "light_circadian": '(light exposure OR circadian OR sleep timing OR evening light)',
+    "movement_balance": '(balance OR proprioception OR mobility OR biomechanics OR walking)',
+    "gut_sensation": '(gut sensation OR interoception OR gastric distension OR bloating)',
+    "natural_remedies": '(herbal medicine OR plant extract OR traditional medicine)',
+    "fasting": '(fasting OR time restricted eating OR caloric restriction)',
+    "hydration": '(hydration OR water intake OR fluid balance)',
+    "posture": '(posture OR sitting OR neck position OR musculoskeletal)',
+    "stress_recovery": '(stress OR relaxation OR recovery OR autonomic nervous system)',
+    "self_testing": '("self test" OR screening OR home test OR functional test)',
+}
+
+# Google News queries: these are intentionally behaviour/visual-first.
+VISUAL_SIGNAL_QUERIES = [
+    "viral health hack",
+    "viral wellness hack",
+    "people trying health trend",
+    "health challenge trend",
+    "home remedy trend",
+    "natural remedy trend",
+    "viral diet trend",
+    "food preparation trend health",
+    "self test health trend",
+    "balance challenge health",
+    "breathing challenge",
+    "sleep routine trend",
+    "walking trend health",
+    "stretching trend health",
+    "cold water trend health",
+    "Ayurveda trend",
+    "naturopathy trend",
+    "traditional remedy trend",
+]
+
+# Authoritative journal watchlist.
+# PubMed is used as the retrieval layer, so no fragile individual RSS URL is required.
+JOURNAL_FOCUS = [
+    "The Lancet",
+    "JAMA",
+    "BMJ",
+    "Nature Medicine",
+    "New England Journal of Medicine",
+    "Annals of Internal Medicine",
+    "PLOS Medicine",
+    "Gut",
+    "Gastroenterology",
+    "Clinical Gastroenterology and Hepatology",
+    "Sleep",
+    "Sleep Medicine",
+    "Journal of Clinical Sleep Medicine",
+    "The American Journal of Clinical Nutrition",
+    "The Journal of Nutrition",
+    "Obesity",
+    "Diabetes Care",
+    "Hypertension",
+    "Circulation",
+    "Neurology",
+    "Brain",
+    "Journal of Physiology",
+    "Medicine & Science in Sports & Exercise",
+    "British Journal of Sports Medicine",
+    "Sports Medicine",
+    "Nutrients",
+    "Phytomedicine",
+    "Journal of Ethnopharmacology",
+    "Journal of Ayurveda and Integrative Medicine",
+]
