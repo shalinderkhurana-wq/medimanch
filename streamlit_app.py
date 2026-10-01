@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 import requests
 import streamlit as st
 
-APP_VERSION = "V11.0"
+APP_VERSION = "V11.1"
 DB_PATH = os.environ.get("MEDIMANCH_DB", str(Path(__file__).with_name("medimanch_radar_v11.db")))
 HEADERS = {"User-Agent": "Medimanch-Professional-Radar/11.0 (research discovery)"}
 SOURCE_STATUS, SOURCE_ERRORS = {}, {}
@@ -407,18 +407,20 @@ def filtered(arr):
         out.append(x)
     return sorted(out,key=lambda z:(z.get("selection_score",0),z.get("freshness_score",0),z.get("question_score",0)),reverse=True)
 
-cols=st.columns(6)
-metric_values=[
-    ("Signals", len(items)),
-    ("Energy", sum(x.get("pillar")=="Energy" for x in items)),
-    ("Gut", sum(x.get("pillar")=="Gut" for x in items)),
-    ("Hydration", sum(x.get("pillar")=="Hydration" for x in items)),
-    ("Recovery", sum(x.get("pillar")=="Recovery" for x in items)),
-    ("YouTube", "ON" if bool(key) else "OFF"),
-]
-for col, (label, value) in zip(cols, metric_values):
-    with col:
-        st.metric(label=label, value=value)
+# Simple, version-safe metric row. Avoid tuple-based rendering so older Streamlit
+# runtimes cannot mis-handle the metric configuration.
+energy_n = sum(1 for x in items if isinstance(x, dict) and x.get("pillar") == "Energy")
+gut_n = sum(1 for x in items if isinstance(x, dict) and x.get("pillar") == "Gut")
+hydration_n = sum(1 for x in items if isinstance(x, dict) and x.get("pillar") == "Hydration")
+recovery_n = sum(1 for x in items if isinstance(x, dict) and x.get("pillar") == "Recovery")
+youtube_state = "ON" if bool(key) else "OFF"
+cols = st.columns(6)
+cols[0].metric("Signals", int(len(items)))
+cols[1].metric("Energy", int(energy_n))
+cols[2].metric("Gut", int(gut_n))
+cols[3].metric("Hydration", int(hydration_n))
+cols[4].metric("Recovery", int(recovery_n))
+cols[5].metric("YouTube", youtube_state)
 
 tabs=st.tabs(["⚡ SELECT NOW","❓ PEOPLE QUESTIONS","🎥 SHOOTABLE","🔥 FRESH","📈 RISING","🧬 BY PILLAR","▶️ YOUTUBE","📰 NEWS","🔬 RESEARCH","🗃️ MEMORY","⚙️ STATUS"])
 
