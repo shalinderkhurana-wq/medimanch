@@ -1,191 +1,297 @@
-import os, re, json, sqlite3, hashlib, random
-from datetime import datetime, timedelta, timezone
-from urllib.parse import quote
-import xml.etree.ElementTree as ET
-import requests
 import streamlit as st
+from datetime import datetime
+from urllib.request import Request, urlopen
+from urllib.parse import quote_plus
+import xml.etree.ElementTree as ET
+import re
+import json
+import math
 
-DB_PATH = os.environ.get('MEDIMANCH_DB', str(Path(__file__).with_name('radar_memory.db')))
-HEADERS={'User-Agent':'Medimanch-Intelligence-Radar/7.0'}
+st.set_page_config(page_title="Medimanch Viral Behaviour Radar", page_icon="🔥", layout="wide")
 
-SEEDS = [
- 'body experiment','body test','strange health habit','people trying health','viral body challenge',
- 'food trend digestion','gut health trend','fermented food trend','soaking food trend','meal timing trend',
- 'sleep hack trend','sleep routine trend','bedtime experiment','morning light sleep','body temperature sleep',
- 'breathing challenge','breathing technique trend','cold exposure trend','energy routine trend',
- 'walking challenge','balance challenge','posture trend','mobility challenge','unusual exercise trend',
- 'hydration trend','water challenge','electrolyte trend','mineral water trend',
- 'traditional remedy trend','home remedy viral','ayurveda remedy trend','herbal drink trend','desi remedy trend',
- 'habit challenge','dopamine detox trend','stress body experiment','focus routine trend','mind body trend'
-]
-MEDIMANCH_MAP={
- 'backward walking':['backward walking','reverse walking','walking backwards','retro walking'],
- 'balance':['balance challenge','one leg balance','balance test','vestibular','proprioception'],
- 'breathing':['breathing','breathwork','breathing exercise','slow breathing','nasal breathing'],
- 'cold exposure':['cold shower','ice bath','cold exposure','cold water'],
- 'morning light':['morning sunlight','morning light','sunlight after waking','light exposure'],
- 'sleep temperature':['body temperature sleep','cooling sleep','cold feet sleep','thermoregulation sleep'],
- 'meal timing':['meal timing','early dinner','time restricted eating','eating window'],
- 'fermentation':['fermented food','fermentation','kanji','kimchi','idli fermentation'],
- 'soaking sprouting':['soaked food','sprouting','soaked nuts','sprouted grains'],
- 'hydration':['hydration','water intake','electrolyte','mineral water'],
- 'posture':['posture','neck posture','forward head','sitting posture'],
- 'herbal remedies':['home remedy','herbal remedy','ayurvedic remedy','herbal drink','desi remedy'],
- 'naturopathy':['naturopathy','mud pack','wet pack','hydrotherapy','natural therapy'],
- 'interoception':['interoception','body signals','internal body sensation','gut feeling physiology'],
- 'thermoregulation':['thermoregulation','body temperature','heat regulation','cooling body']
-}
-VISUAL_WORDS=['people doing','challenge','before after','experiment','test at home','demonstration','routine','trying','reaction','walk','hold','breathe','eat','drink','sleep','soak','sprout','ice','sunlight','posture']
-NOISE=['celebrity','movie','song','gaming','politics','election','crypto','stock','giveaway','shorts compilation']
+# ============================================================
+# MEDIMANCH V2 — DISCOVERY -> BEHAVIOUR -> VIDEO OPPORTUNITY
+# ============================================================
 
-def db():
-    con=sqlite3.connect(DB_PATH); con.row_factory=sqlite3.Row
-    con.execute("""CREATE TABLE IF NOT EXISTS signals(
-      uid TEXT PRIMARY KEY, source TEXT, title TEXT, url TEXT, published TEXT, first_seen TEXT,
-      last_seen TEXT, seen_count INTEGER DEFAULT 1, last_score REAL DEFAULT 0,
-      kind TEXT, concept TEXT, raw_json TEXT)""")
-    con.execute("""CREATE TABLE IF NOT EXISTS scans(
-      id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, source_counts TEXT, new_count INTEGER, changed_count INTEGER)""")
-    con.commit(); return con
+try:
+    from medimanch_keywords import RADAR_DICTIONARY
+except Exception:
+    RADAR_DICTIONARY = {}
 
-def now(): return datetime.now(timezone.utc)
-def iso(dt): return dt.astimezone(timezone.utc).isoformat()
-def uid(source,url,title): return hashlib.sha1((source+'|'+url+'|'+title.lower().strip()).encode()).hexdigest()[:24]
-def clean(s): return re.sub(r'\s+',' ', re.sub(r'<[^>]+>',' ',s or '')).strip()
-def parse_date(s):
-    if not s: return None
+def terms(category):
+    return [x.lower() for x in RADAR_DICTIONARY.get(category, [])]
+
+def fetch_url(url, timeout=15):
+    req = Request(url, headers={"User-Agent": "Mozilla/5.0 MedimanchRadar/2.0"})
+    with urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+def parse_rss(xml_bytes):
+    root = ET.fromstring(xml_bytes)
+    out = []
+    for item in root.findall(".//item"):
+        def get(tag):
+            n = item.find(tag)
+            return (n.text or "").strip() if n is not None else ""
+        out.append({
+            "title": get("title"),
+            "link": get("link"),
+            "description": re.sub(r"<[^>]+>", " ", get("description")).strip(),
+            "published": get("pubDate")
+        })
+    return out
+
+def matched_terms(text):
+    t = text.lower()
+    matches = {}
+    for category, values in RADAR_DICTIONARY.items():
+        hits = [v for v in values if v.lower() in t]
+        if hits:
+            matches[category] = sorted(set(hits), key=lambda x: (-len(x), x))[:12]
+    return matches
+
+def extract_signals(text):
+    m = matched_terms(text)
+    flat = [x for xs in m.values() for x in xs]
+    return m, flat
+
+def score_signal(item):
+    m = item["matches"]
+    # Discovery score: intentionally rewards action + visual + claim/question structure.
+    s = 0
+    s += min(20, len(m.get("behaviour", [])) * 5)
+    s += min(18, len(m.get("actions", [])) * 4)
+    s += min(12, len(m.get("visual", [])) * 4)
+    s += min(12, len(m.get("naturopathy", [])) * 4)
+    s += min(10, len(m.get("diet_food", [])) * 3)
+    s += min(10, len(m.get("self_test", [])) * 3)
+    s += min(8, len(m.get("myth_claim", [])) * 2)
+    s += min(5, len(m.get("ayurveda", [])) * 2)
+    if item.get("source") == "Google Trends India":
+        s += 10
+    if item.get("source") == "PubMed":
+        s += 3
+    return min(100, s)
+
+def classify(item):
+    m = item["matches"]
+    action = bool(m.get("actions") or m.get("behaviour"))
+    visual = bool(m.get("visual") or m.get("self_test") or m.get("actions"))
+    claim = bool(m.get("myth_claim") or m.get("effects"))
+    if action and claim and visual:
+        return "🔥 BEHAVIOUR + CLAIM + VISUAL"
+    if action and visual:
+        return "🎥 ACTIONABLE / VISUAL BEHAVIOUR"
+    if m.get("naturopathy") or m.get("ayurveda"):
+        return "🌿 TRADITIONAL / NATUROPATHY"
+    if m.get("diet_food"):
+        return "🍽️ FOOD / DIET BEHAVIOUR"
+    if m.get("self_test"):
+        return "🧪 SELF-TEST / CHALLENGE"
+    if claim:
+        return "⚠️ CLAIM / MYTH-FULL CHECK"
+    return "RELATED SIGNAL"
+
+def videoability(item):
+    m = item["matches"]
+    score = 0
+    if m.get("actions"): score += 20
+    if m.get("visual"): score += 20
+    if m.get("self_test"): score += 15
+    if m.get("behaviour"): score += 10
+    if m.get("naturopathy") or m.get("ayurveda"): score += 10
+    if m.get("diet_food"): score += 10
+    if m.get("myth_claim"): score += 10
+    if m.get("effects"): score += 5
+    return min(100, score)
+
+def build_video_angle(item):
+    title = item["title"]
+    m = item["matches"]
+    parts = []
+    if m.get("actions"):
+        parts.append("visible action: " + ", ".join(m["actions"][:3]))
+    if m.get("myth_claim"):
+        parts.append("claim-check: " + ", ".join(m["myth_claim"][:3]))
+    if m.get("effects"):
+        parts.append("effect/question: " + ", ".join(m["effects"][:3]))
+    if m.get("self_test"):
+        parts.append("self-test/challenge possible")
+    if m.get("naturopathy"):
+        parts.append("naturopathy/home-practice context")
+    if m.get("diet_food"):
+        parts.append("food/preparation behaviour")
+    angle = " · ".join(parts)
+    return (
+        "Don't simply repeat the claim. Turn the visible behaviour into a "
+        "demonstration/question and verify the claimed effect. " + angle
+    )
+
+@st.cache_data(ttl=600, show_spinner=False)
+def google_trends():
     try:
-        from email.utils import parsedate_to_datetime
-        return parsedate_to_datetime(s).astimezone(timezone.utc)
-    except Exception: return None
+        rows = parse_rss(fetch_url("https://trends.google.com/trending/rss?geo=IN"))
+        out = []
+        for row in rows:
+            text = row["title"] + " " + row["description"]
+            m, flat = extract_signals(text)
+            if not flat:
+                continue
+            item = {
+                "source": "Google Trends India",
+                "title": row["title"],
+                "link": row["link"],
+                "published": row["published"],
+                "description": row["description"],
+                "matches": m,
+            }
+            item["type"] = classify(item)
+            item["videoability"] = videoability(item)
+            item["score"] = min(100, score_signal(item) + round(item["videoability"] * .25))
+            item["video_angle"] = build_video_angle(item)
+            out.append(item)
+        return out, ""
+    except Exception as e:
+        return [], str(e)
 
-def rss(url):
+@st.cache_data(ttl=900, show_spinner=False)
+def pubmed():
+    # Research is supporting evidence, not proof that a trending behaviour works.
+    all_terms = []
+    for category in ["behaviour", "actions", "naturopathy", "diet_food", "ayurveda", "effects", "self_test"]:
+        all_terms += terms(category)
+    all_terms = sorted(set(all_terms), key=len, reverse=True)[:70]
+    query = " OR ".join('"' + x + '"' for x in all_terms)
+    url = (
+        "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+        "?db=pubmed&retmode=json&retmax=40&sort=date&term=" + quote_plus(query)
+    )
     try:
-        r=requests.get(url,headers=HEADERS,timeout=15); r.raise_for_status(); root=ET.fromstring(r.content); out=[]
-        for item in root.findall('.//item'):
-            title=clean(item.findtext('title')); link=clean(item.findtext('link')); desc=clean(item.findtext('description')); pub=clean(item.findtext('pubDate'))
-            if title and link: out.append({'title':title,'url':link,'description':desc,'published':pub})
-        return out
-    except Exception: return []
+        data = json.loads(fetch_url(url))
+        ids = data.get("esearchresult", {}).get("idlist", [])
+        if not ids:
+            return [], ""
+        su = (
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
+            "?db=pubmed&retmode=json&id=" + ",".join(ids)
+        )
+        summary = json.loads(fetch_url(su)).get("result", {})
+        out = []
+        for pid in ids:
+            rec = summary.get(pid, {})
+            title = (rec.get("title") or "").strip()
+            if not title:
+                continue
+            m, flat = extract_signals(title)
+            item = {
+                "source": "PubMed",
+                "title": title,
+                "link": "https://pubmed.ncbi.nlm.nih.gov/" + pid + "/",
+                "published": rec.get("pubdate", ""),
+                "description": rec.get("source", ""),
+                "matches": m,
+            }
+            item["type"] = classify(item)
+            item["videoability"] = videoability(item)
+            item["score"] = min(100, score_signal(item) + round(item["videoability"] * .10))
+            item["video_angle"] = build_video_angle(item)
+            out.append(item)
+        return out, ""
+    except Exception as e:
+        return [], str(e)
 
-def google_trends(): return rss('https://trends.google.com/trending/rss?geo=IN&hl=en-IN')
-def google_news(q): return rss('https://news.google.com/rss/search?q='+quote(q)+'&hl=en-IN&gl=IN&ceid=IN:en')
+def scan():
+    a, e1 = google_trends()
+    b, e2 = pubmed()
+    all_rows = a + b
+    seen = set()
+    clean = []
+    for x in all_rows:
+        key = re.sub(r"\W+", " ", x["title"].lower()).strip()
+        if key in seen:
+            continue
+        seen.add(key)
+        clean.append(x)
+    clean.sort(key=lambda x: (x["score"], x["videoability"]), reverse=True)
+    return clean, [e for e in [e1, e2] if e]
 
-def youtube(q,api_key,hours=48):
-    if not api_key: return []
-    after=(now()-timedelta(hours=hours)).isoformat().replace('+00:00','Z')
-    params={'part':'snippet','q':q,'type':'video','maxResults':10,'order':'date','publishedAfter':after,'regionCode':'IN','relevanceLanguage':'hi','key':api_key}
-    try:
-        r=requests.get('https://www.googleapis.com/youtube/v3/search',params=params,timeout=15); r.raise_for_status(); data=r.json()
-        return [{'title':x.get('snippet',{}).get('title',''),'url':'https://www.youtube.com/watch?v='+x.get('id',{}).get('videoId',''),'description':x.get('snippet',{}).get('description',''),'published':x.get('snippet',{}).get('publishedAt','')} for x in data.get('items',[]) if x.get('id',{}).get('videoId')]
-    except Exception: return []
+if "signals" not in st.session_state:
+    st.session_state.signals = []
+if "errors" not in st.session_state:
+    st.session_state.errors = []
 
-def concept_match(text):
-    t=text.lower(); best=[]
-    for c,aliases in MEDIMANCH_MAP.items():
-        hits=sum(1 for a in aliases if a in t)
-        if hits: best.append((hits,c))
-    return sorted(best,reverse=True)[0][1] if best else None
+st.title("🔥 MEDIMANCH VIRAL BEHAVIOUR & VIDEO RADAR")
+st.caption("Live signal → behaviour → claim → visual opportunity → research")
 
-def score_signal(x):
-    text=(x['title']+' '+x.get('description','')).lower(); score=0
-    d=parse_date(x.get('published'))
-    if d:
-        age=(now()-d).total_seconds()/3600; score += 35 if age<=6 else 25 if age<=24 else 15 if age<=48 else 5
-    score += min(25,sum(2 for w in VISUAL_WORDS if w in text))
-    score -= min(25,sum(5 for w in NOISE if w in text))
-    if x.get('concept'): score += 25
-    if any(k in text for k in ['health','body','sleep','gut','food','water','breath','exercise','remedy','wellness']): score += 10
-    return max(0,min(100,score))
+if st.button("🔥 RUN LIVE SCAN", type="primary"):
+    with st.spinner("Scanning live feeds and extracting Medimanch-style opportunities..."):
+        st.session_state.signals, st.session_state.errors = scan()
 
-def classify(raw,source):
-    x={'source':source,'title':raw.get('title',''),'url':raw.get('url',''),'description':raw.get('description',''),'published':raw.get('published','')}
-    x['concept']=concept_match(x['title']+' '+x['description']); text=(x['title']+' '+x['description']).lower()
-    x['kind']='visual_behaviour' if any(w in text for w in VISUAL_WORDS) else 'discovery'; x['score']=score_signal(x); x['uid']=uid(source,x['url'],x['title']); return x
+signals = st.session_state.signals
 
-def mutate(seed,n):
-    variants=[seed,seed+' new trend',seed+' challenge',seed+' experiment',seed+' people doing',seed+' before after',seed+' body',seed+' India']
-    return variants[n%len(variants)]
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("ACTIVE MATCHES", len(signals))
+c2.metric("VISUAL", sum(x["videoability"] >= 50 for x in signals))
+c3.metric("BEHAVIOUR", sum("BEHAVIOUR" in x["type"] for x in signals))
+c4.metric("CLAIM / MYTH", sum("CLAIM" in x["type"] for x in signals))
+c5.metric("SHOOT CANDIDATES", sum(x["score"] >= 65 for x in signals))
 
-def mutate_from_trend(title):
-    base=re.sub(r'\s+',' ',re.sub(r'[^\w\s-]',' ',title.lower())).strip(); base=' '.join(base.split()[:9])
-    return [base,base+' health',base+' body',base+' experiment',base+' challenge']
+st.divider()
 
-def persist(items):
-    con=db(); new=[]; changed=[]; ts=iso(now())
-    for x in items:
-        row=con.execute('SELECT * FROM signals WHERE uid=?',(x['uid'],)).fetchone()
-        if not row:
-            con.execute('INSERT INTO signals VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',(x['uid'],x['source'],x['title'],x['url'],x.get('published'),ts,ts,1,x['score'],x['kind'],x.get('concept'),json.dumps(x)))
-            x['status']='NEW'; new.append(x)
-        else:
-            delta=x['score']-row['last_score']; status='ACCELERATING' if delta>=15 else 'RISING' if delta>=5 else 'STABLE'
-            con.execute('UPDATE signals SET last_seen=?,seen_count=seen_count+1,last_score=?,concept=?,raw_json=? WHERE uid=?',(ts,x['score'],x.get('concept'),json.dumps(x),x['uid']))
-            x['status']=status
-            if status!='STABLE': changed.append(x)
-    con.execute('INSERT INTO scans(ts,source_counts,new_count,changed_count) VALUES(?,?,?,?)',(ts,json.dumps({}),len(new),len(changed))); con.commit(); con.close(); return new,changed
+tab1, tab2, tab3 = st.tabs(["🔥 SHOOT CANDIDATES", "🌐 ALL ACTIVE SIGNALS", "🧠 ENGINE LOGIC"])
 
-def run_scan(api_key,scan_number):
-    raw=[]; counts={}; trends=google_trends(); counts['trends']=len(trends)
-    for t in trends[:35]: raw.append(classify(t,'Google Trends IN'))
-    queries=[]
-    for t in trends[:35]:
-        tx=(t.get('title','')+' '+t.get('description','')).lower()
-        if any(k in tx for k in ['health','body','food','sleep','water','fitness','exercise','diet','remedy','wellness','weight','pain','breath','skin','gut']): queries += mutate_from_trend(t.get('title',''))[:2]
-    rng=random.Random(scan_number*7919); seeds=SEEDS[:]; rng.shuffle(seeds); queries += [mutate(q,scan_number+i) for i,q in enumerate(seeds[:10])]
-    seen=set(); queries=[q for q in queries if q and q.lower() not in seen and not seen.add(q.lower())]
-    for q in queries[:12]:
-        for item in google_news(q)[:8]: raw.append(classify(item,'Google News'))
-    counts['news_queries']=min(12,len(queries))
-    ytq=queries[:8]
-    if api_key:
-        for q in ytq:
-            for item in youtube(q,api_key,48): raw.append(classify(item,'YouTube'))
-    counts['youtube_queries']=len(ytq) if api_key else 0
-    uniq={}
-    for x in raw:
-        if x['uid'] not in uniq or x['score']>uniq[x['uid']]['score']: uniq[x['uid']]=x
-    items=sorted(uniq.values(),key=lambda z:z['score'],reverse=True); new,changed=persist(items)
-    return items,new,changed,counts
+with tab1:
+    candidates = [x for x in signals if x["score"] >= 65]
+    if not candidates:
+        st.info("No strong candidate matched this scan. That is acceptable: the bot should not manufacture topics.")
+    for x in candidates[:15]:
+        st.markdown("## 🔥 " + x["title"])
+        st.write("**Signal type:**", x["type"])
+        st.write("**Source:**", x["source"], "| **Discovery score:**", str(x["score"]) + "/100", "| **Videoability:**", str(x["videoability"]) + "/100")
+        if x["matches"]:
+            for cat, hits in x["matches"].items():
+                st.write("**" + cat.replace("_", " ").title() + ":**", " · ".join(hits))
+        st.info("🎬 Medimanch angle: " + x["video_angle"])
+        if x["link"]:
+            st.markdown("[Open source →](" + x["link"] + ")")
+        st.divider()
 
-st.set_page_config(page_title='MEDIMANCH INTELLIGENCE RADAR V7',layout='wide')
-st.title('🔥 MEDIMANCH INTELLIGENCE RADAR V7 — DISCOVERY ENGINE')
-st.caption('INTERNET FIRST → CHANGE DETECTION → QUERY MUTATION → MEDIMANCH MATCH → VISUAL OPPORTUNITY')
-api_key=st.secrets.get('YOUTUBE_API_KEY',os.getenv('YOUTUBE_API_KEY',''))
-con=db(); scan_count=con.execute('SELECT COUNT(*) FROM scans').fetchone()[0]; con.close()
-a,b,c,d=st.columns(4); a.metric('Persistent scans',scan_count); b.metric('YouTube API','CONNECTED' if api_key else 'NOT CONNECTED'); c.metric('Memory','ON'); d.metric('Mode','INTERNET-FIRST')
-if 'last_items' not in st.session_state: st.session_state.last_items=[]
-if st.button('🔄 RUN FRESH DISCOVERY SCAN',type='primary'):
-    with st.spinner('Discovering new signals, changing search paths and comparing with persistent memory…'):
-        items,new,changed,counts=run_scan(api_key,scan_count+1)
-        st.session_state.update(last_items=items,last_new=new,last_changed=changed,counts=counts)
-    st.success(f'Fresh scan: {len(new)} NEW, {len(changed)} CHANGED/RISING')
-items=st.session_state.get('last_items',[]); new=st.session_state.get('last_new',[]); changed=st.session_state.get('last_changed',[])
-tabs=st.tabs(['🔥 NEW','⚡ ACCELERATING','🔄 RISING','🎥 VISUAL','🧭 UNKNOWN','🗃️ MEMORY','⚙️ STATUS'])
-def card(x):
-    st.markdown(f"### {x.get('status','SIGNAL')} — {x['title']}")
-    st.write(f"**Source:** {x['source']}  |  **Score:** {x['score']}/100  |  **Concept:** {x.get('concept') or 'Not mapped'}")
-    if x.get('description'): st.caption(x['description'][:350])
-    if x.get('url'): st.markdown(f"[Open source]({x['url']})")
-    st.divider()
-with tabs[0]:
-    arr=sorted(new,key=lambda x:x['score'],reverse=True)[:20]
-    st.subheader('Signals never seen before'); [card(x) for x in arr]
-    if not arr: st.info('No brand-new signals. Run later; the query space rotates.')
-with tabs[1]:
-    arr=sorted([x for x in changed if x['status']=='ACCELERATING'],key=lambda x:x['score'],reverse=True)[:20]; [card(x) for x in arr]
-    if not arr: st.info('No accelerating signals detected.')
-with tabs[2]:
-    arr=sorted([x for x in changed if x['status']=='RISING'],key=lambda x:x['score'],reverse=True)[:20]; [card(x) for x in arr]
-    if not arr: st.info('No rising signals detected.')
-with tabs[3]:
-    arr=[x for x in items if x['kind']=='visual_behaviour' and x['score']>=35][:25]; [card(x) for x in arr]
-with tabs[4]:
-    arr=[x for x in new if not x.get('concept')][:25]; [card(x) for x in arr]
-    st.caption('UNKNOWN is deliberate: it stops the dictionary from becoming a prison.')
-with tabs[5]:
-    con=db(); rows=con.execute('SELECT source,title,last_seen,seen_count,last_score,concept FROM signals ORDER BY last_seen DESC LIMIT 100').fetchall(); con.close(); st.dataframe([dict(r) for r in rows],use_container_width=True)
-with tabs[6]:
-    st.write('Google Trends = high-frequency discovery. Google News = expansion. YouTube = quota-aware recent video discovery. SQLite = persistent memory.')
-    st.write('Last source counts:',st.session_state.get('counts',{})); st.warning('Never paste your YouTube API key into chat. Store it only in Streamlit Secrets as YOUTUBE_API_KEY.')
-st.caption('V7 rule: DISCOVER FIRST. Do not repeatedly search the same fixed Medimanch topics and call them fresh.')
+with tab2:
+    for x in signals[:40]:
+        with st.expander(x["title"] + " — " + x["type"] + " — " + str(x["score"]) + "/100"):
+            st.write("Source:", x["source"])
+            st.write("Matched:", x["matches"])
+            st.write("Videoability:", x["videoability"])
+            st.write(x["video_angle"])
+            st.markdown("[Open source →](" + x["link"] + ")")
+
+with tab3:
+    st.write("""
+The current engine deliberately separates DISCOVERY from VERIFICATION.
+
+1. Capture an active signal.
+2. Match it against Medimanch behaviour/action/food/naturopathy/self-test/claim vocabulary.
+3. Estimate whether the signal can become visible video.
+4. Rank it as a discovery opportunity.
+5. Research/evidence is supporting context — not automatic proof.
+6. A later verification layer will check authenticity, evidence, safety and originality before a final SHOOT decision.
+""")
+    st.write("Dictionary categories currently loaded:")
+    for k, v in RADAR_DICTIONARY.items():
+        st.write("**" + k.upper() + "**:", len(v), "signals")
+
+if st.session_state.errors:
+    st.warning("Some feeds could not be read during this scan.")
+    for e in st.session_state.errors:
+        st.code(e)
+
+st.divider()
+st.success("🟢 Engine ONLINE")
+st.write("Last dashboard run:", datetime.now().strftime("%d %B %Y, %I:%M:%S"))
+
+with st.expander("⚙️ View current Medimanch signal dictionary"):
+    for k, v in RADAR_DICTIONARY.items():
+        st.write("### " + k.upper())
+        st.write(", ".join(v))
+
+st.caption("Discovery score is not a truth score. Viral/active signals require separate authenticity, evidence and safety verification.")
